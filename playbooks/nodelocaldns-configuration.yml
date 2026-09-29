@@ -1,0 +1,74 @@
+---
+- name: Preserve NodeLocal DNS upstream configuration
+  hosts: master
+  gather_facts: false
+
+  vars:
+    kubectl_bin: /usr/local/bin/kubectl
+    desired_forward: "forward . 8.8.8.8 8.8.4.4"
+
+  tasks:
+    - name: Read current NodeLocal DNS ConfigMap
+      ansible.builtin.command:
+        argv:
+          - "{{ kubectl_bin }}"
+          - -n
+          - kube-system
+          - get
+          - configmap
+          - nodelocaldns
+          - -o
+          - json
+      register: nodelocal_cm
+      changed_when: false
+
+    - name: Verify expected external forwarding configuration
+      ansible.builtin.assert:
+        that:
+          - >-
+            current_corefile.count('forward . /etc/resolv.conf') +
+            current_corefile.count(desired_forward) == 1
+        fail_msg: >-
+          Unexpected NodeLocal DNS forwarding configuration.
+          Inspect the current Corefile before making changes.
+      vars:
+        current_corefile: "{{ (nodelocal_cm.stdout | from_json).data.Corefile }}"
+
+    - name: Restore explicit NodeLocal DNS upstreams if necessary
+      ansible.builtin.command:
+        argv:
+          - "{{ kubectl_bin }}"
+          - -n
+          - kube-system
+          - patch
+          - configmap
+          - nodelocaldns
+          - --type=merge
+          - -p
+          - "{{ {'data': {'Corefile': desired_corefile}} | to_json }}"
+      vars:
+        current_corefile: "{{ (nodelocal_cm.stdout | from_json).data.Corefile }}"
+        desired_corefile: >-
+          {{ current_corefile |
+             replace('forward . /etc/resolv.conf', desired_forward) }}
+      when: current_corefile != desired_corefile
+
+    - name: Read configuration after reconciliation
+      ansible.builtin.command:
+        argv:
+          - "{{ kubectl_bin }}"
+          - -n
+          - kube-system
+          - get
+          - configmap
+          - nodelocaldns
+          - -o
+          - json
+      register: nodelocal_verified
+      changed_when: false
+
+    - name: Verify desired upstreams are configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            (nodelocal_verified.stdout | from_json).data.Corefile.count(desired_forward) == 1

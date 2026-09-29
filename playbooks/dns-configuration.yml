@@ -1,0 +1,83 @@
+---
+- name: Enforce worker-only DNS scheduling
+  hosts: master
+  gather_facts: false
+
+  vars:
+    kubectl: /usr/local/bin/kubectl
+
+    dns_deployments:
+      - coredns
+      - dns-autoscaler
+
+    dns_required_affinity:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: node-role.kubernetes.io/control-plane
+              operator: DoesNotExist
+
+    dns_patch:
+      spec:
+        template:
+          spec:
+            nodeSelector:
+              kubernetes.io/hostname: null
+              kubernetes.io/os: linux
+            affinity:
+              nodeAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution: null
+                requiredDuringSchedulingIgnoredDuringExecution: "{{ dns_required_affinity }}"
+
+  tasks:
+    - name: Read current DNS deployments
+      ansible.builtin.command:
+        argv:
+          - "{{ kubectl }}"
+          - -n
+          - kube-system
+          - get
+          - deployment
+          - "{{ item }}"
+          - -o
+          - json
+      loop: "{{ dns_deployments }}"
+      register: dns_current
+      changed_when: false
+
+    - name: Apply worker-only DNS scheduling when required
+      ansible.builtin.command:
+        argv:
+          - "{{ kubectl }}"
+          - -n
+          - kube-system
+          - patch
+          - deployment
+          - "{{ item.item }}"
+          - --type=strategic
+          - -p
+          - "{{ dns_patch | to_json }}"
+      vars:
+        podspec: "{{ (item.stdout | from_json).spec.template.spec }}"
+        current_selector: "{{ podspec.nodeSelector | default({}, true) }}"
+        current_affinity: "{{ (podspec.affinity | default({}, true)).nodeAffinity | default({}, true) }}"
+      loop: "{{ dns_current.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: >-
+        current_selector.get('kubernetes.io/hostname') is not none
+        or current_selector.get('kubernetes.io/os') != 'linux'
+        or current_affinity.get('requiredDuringSchedulingIgnoredDuringExecution') != dns_required_affinity
+        or 'preferredDuringSchedulingIgnoredDuringExecution' in current_affinity
+
+    - name: Wait for healthy DNS deployments
+      ansible.builtin.command:
+        argv:
+          - "{{ kubectl }}"
+          - -n
+          - kube-system
+          - rollout
+          - status
+          - "deployment/{{ item }}"
+          - --timeout=180s
+      loop: "{{ dns_deployments }}"
+      changed_when: false

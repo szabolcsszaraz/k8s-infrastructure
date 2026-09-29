@@ -16,20 +16,31 @@ Kubernetes version: `v1.34.3`
 The master is intentionally cordoned (`Ready,SchedulingDisabled`). Application workloads run on the two workers.
 
 ## Kubespray
+he Kubernetes cluster was provisioned using Kubespray.
 
-Kubespray source version:
-
+Kubespray version:
 `v2.26.0-180-gb8541962f`
 
-Source location on the master:
-
+Source location:
 `/home/kubernetes1/Downloads/kubespray`
 
 Cluster inventory:
+`inventory/mycluster/inventory.ini`
 
-`/home/kubernetes1/Downloads/kubespray/inventory/mycluster`
+The cluster-specific group variables currently match the
+Kubespray sample inventory.
 
-The complete inventory and credentials are not stored in this repository. An encrypted local backup is maintained separately.
+The original inventory is backed up separately using Ansible Vault
+and is not stored in Git.
+
+After running Kubespray, reapply the custom DNS configuration:
+
+```bash
+ansible-playbook -i inventory/hosts.yml \
+  playbooks/dns-configuration.yml --ask-vault-pass
+
+ansible-playbook -i inventory/hosts.yml \
+  playbooks/nodelocaldns-configuration.yml --ask-vault-pass
 
 ## Ansible Playbooks
 

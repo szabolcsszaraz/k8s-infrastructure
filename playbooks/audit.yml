@@ -1,0 +1,46 @@
+---
+- name: Kubernetes infrastructure audit
+  hosts: all
+  gather_facts: true
+  become: false
+
+  tasks:
+    - name: Count available package upgrades
+      ansible.builtin.shell: |
+        apt list --upgradable 2>/dev/null |
+        awk '/\[upgradable from:/ {count++} END {print count+0}'
+      register: apt_upgrades
+      changed_when: false
+
+    - name: Check held packages
+      ansible.builtin.command: apt-mark showhold
+      register: held_packages
+      changed_when: false
+
+    - name: Check root filesystem
+      ansible.builtin.command: df -h /
+      register: root_disk
+      changed_when: false
+
+    - name: Display server information
+      ansible.builtin.debug:
+        msg:
+          - "Hostname: {{ inventory_hostname }}"
+          - "IP: {{ ansible_host }}"
+          - "OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+          - "Kernel: {{ ansible_facts['kernel'] }}"
+          - "RAM: {{ ansible_facts['memtotal_mb'] }} MB"
+          - "Available updates: {{ apt_upgrades.stdout }}"
+          - "Held packages: {{ held_packages.stdout_lines }}"
+          - "Root filesystem: {{ root_disk.stdout_lines }}"
+
+    - name: Check NFS RAID status
+      ansible.builtin.command: cat /proc/mdstat
+      register: raid_status
+      changed_when: false
+      when: "'storage' in group_names"
+
+    - name: Display NFS RAID status
+      ansible.builtin.debug:
+        var: raid_status.stdout_lines
+      when: "'storage' in group_names"

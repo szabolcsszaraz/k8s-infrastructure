@@ -1,0 +1,33 @@
+---
+- name: OS update preflight
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Check held packages
+      ansible.builtin.command: apt-mark showhold
+      register: held_packages
+      changed_when: false
+
+    - name: Simulate package upgrade
+      ansible.builtin.command: apt-get -s upgrade
+      register: upgrade_simulation
+      changed_when: false
+
+    - name: Check pending reboot
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Display update summary
+      ansible.builtin.debug:
+        msg:
+          - "Server: {{ inventory_hostname }}"
+          - "OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}"
+          - "Kernel: {{ ansible_facts['kernel'] }}"
+          - "Held packages: {{ held_packages.stdout_lines }}"
+          - "Reboot pending: {{ reboot_required.stat.exists }}"
+          - "Important upgrades: {{ upgrade_simulation.stdout_lines | select('match', '^Inst (kube|containerd|docker|etcd|linux-image|linux-headers|systemd|openssh|network-manager|mdadm|nfs)') | list }}"
+          - "Package removals: {{ upgrade_simulation.stdout_lines | select('match', '^Remv ') | list }}"
+          - "APT summary: {{ upgrade_simulation.stdout_lines[-5:] }}"

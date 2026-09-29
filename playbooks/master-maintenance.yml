@@ -1,0 +1,208 @@
+---
+- name: Master OS maintenance
+  hosts: master
+  become: true
+  gather_facts: true
+
+  vars:
+    confirm_os_upgrade: false
+    confirm_console_access: false
+    etcd_snapshot_path: /var/backups/kubernetes/etcd-20260929T111416Z.db
+
+  tasks:
+    - name: Verify Debian 12
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Debian"
+          - ansible_distribution_major_version == "12"
+
+    - name: Verify master is cordoned
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - node
+          - master
+          - -o
+          - "jsonpath={.spec.unschedulable}"
+      become: false
+      register: node_status
+      changed_when: false
+
+    - name: Stop if master is schedulable
+      ansible.builtin.assert:
+        that:
+          - node_status.stdout == "true"
+
+    - name: Check critical services
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-active
+          - kubelet
+          - containerd
+          - etcd
+      register: critical_services
+      changed_when: false
+
+    - name: Verify critical services are active
+      ansible.builtin.assert:
+        that:
+          - critical_services.stdout_lines == ['active', 'active', 'active']
+
+    - name: Check etcd health
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/etcdctl
+          - --endpoints=https://127.0.0.1:2379
+          - --cacert=/etc/ssl/etcd/ssl/ca.pem
+          - --cert=/etc/ssl/etcd/ssl/admin-master.pem
+          - --key=/etc/ssl/etcd/ssl/admin-master-key.pem
+          - endpoint
+          - health
+      environment:
+        ETCDCTL_API: "3"
+      register: etcd_health
+      changed_when: false
+
+    - name: Verify etcd is healthy
+      ansible.builtin.assert:
+        that:
+          - "'is healthy' in etcd_health.stdout"
+
+    - name: Check etcd snapshot
+      ansible.builtin.stat:
+        path: "{{ etcd_snapshot_path }}"
+      register: etcd_snapshot
+
+    - name: Verify snapshot exists and is not empty
+      ansible.builtin.assert:
+        that:
+          - etcd_snapshot.stat.exists
+          - etcd_snapshot.stat.size > 1000000
+
+    - name: Check IP forwarding
+      ansible.builtin.command: sysctl -n net.ipv4.ip_forward
+      register: ip_forward
+      changed_when: false
+
+    - name: Verify IP forwarding
+      ansible.builtin.assert:
+        that:
+          - ip_forward.stdout == "1"
+
+    - name: Check persistent IP forwarding
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Eq
+          - '^net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*1$'
+          - /etc/sysctl.conf
+      changed_when: false
+
+    - name: Check active gateway NAT
+      ansible.builtin.command:
+        argv:
+          - iptables
+          - -t
+          - nat
+          - -C
+          - POSTROUTING
+          - -o
+          - eno1
+          - -j
+          - MASQUERADE
+      changed_when: false
+
+    - name: Check persistent gateway NAT
+      ansible.builtin.command:
+        argv:
+          - grep
+          - -Fq
+          - --
+          - "-A POSTROUTING -o eno1 -j MASQUERADE"
+          - /etc/iptables/rules.v4
+      changed_when: false
+
+    - name: Verify persistent firewall autostart
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - is-enabled
+          - netfilter-persistent
+      register: firewall_autostart
+      changed_when: false
+
+    - name: Check dpkg consistency
+      ansible.builtin.command: dpkg --audit
+      register: dpkg_audit
+      changed_when: false
+
+    - name: Stop if dpkg has unresolved problems
+      ansible.builtin.assert:
+        that:
+          - dpkg_audit.stdout | trim == ""
+
+    - name: Check available disk space
+      ansible.builtin.command: df -Pm / /boot /boot/efi
+      register: disk_space
+      changed_when: false
+
+    - name: Display disk space
+      ansible.builtin.debug:
+        var: disk_space.stdout_lines
+
+    - name: Refresh APT package lists
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Simulate dist-upgrade
+      ansible.builtin.command: apt-get -s dist-upgrade
+      register: simulation
+      changed_when: false
+
+    - name: Block removals and Kubernetes component upgrades
+      ansible.builtin.assert:
+        that:
+          - "(simulation.stdout_lines | select('match', '^(Remv|Purg) ') | list | length) == 0"
+          - "(simulation.stdout_lines | select('match', '^Inst (kubelet|kubeadm|kubectl|kubernetes-cni|containerd|containerd.io|docker[^ ]*|etcd[^ ]*)( |$)') | list | length) == 0"
+          - "'Debian:13' not in simulation.stdout"
+        fail_msg: "Unexpected package changes. Stop and review the APT plan."
+
+    - name: Display proposed changes
+      ansible.builtin.debug:
+        msg:
+          - "{{ simulation.stdout_lines | select('search', 'upgraded,') | list }}"
+          - "{{ simulation.stdout_lines | select('match', '^Inst (linux-image|grub|shim|systemd|openssh)') | list }}"
+
+    - name: Require confirmed console access before upgrade
+      ansible.builtin.assert:
+        that:
+          - confirm_console_access | bool
+        fail_msg: "Master upgrade blocked: console access has not been confirmed."
+      when: confirm_os_upgrade | bool
+
+    - name: Upgrade Debian packages without reboot
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: false
+        dpkg_options: force-confdef,force-confold
+        lock_timeout: 300
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: l
+        APT_LISTCHANGES_FRONTEND: none
+      when: confirm_os_upgrade | bool
+
+    - name: Check whether reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_flag
+
+    - name: Display maintenance status
+      ansible.builtin.debug:
+        msg:
+          - "Upgrade approved: {{ confirm_os_upgrade }}"
+          - "Reboot required: {{ reboot_flag.stat.exists }}"
+          - "Current kernel: {{ ansible_facts['kernel'] }}"
+          - "Master remains cordoned"

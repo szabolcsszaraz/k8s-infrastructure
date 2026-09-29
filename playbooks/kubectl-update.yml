@@ -1,0 +1,34 @@
+---
+- name: Update kubectl client on master
+  hosts: master
+  become: true
+  gather_facts: true
+
+  vars:
+    kubectl_version: v1.34.3
+    kubectl_base_url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64"
+
+  tasks:
+    - name: Verify CPU architecture
+      ansible.builtin.assert:
+        that:
+          - ansible_architecture == "x86_64"
+
+    - name: Download and install verified kubectl
+      ansible.builtin.get_url:
+        url: "{{ kubectl_base_url }}/kubectl"
+        dest: /usr/local/bin/kubectl
+        checksum: "sha256:{{ kubectl_base_url }}/kubectl.sha256"
+        owner: root
+        group: root
+        mode: "0755"
+        backup: true
+
+    - name: Check installed client version
+      ansible.builtin.command: /usr/local/bin/kubectl version --client
+      register: kubectl_result
+      changed_when: false
+
+    - name: Display version
+      ansible.builtin.debug:
+        var: kubectl_result.stdout

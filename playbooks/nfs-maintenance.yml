@@ -1,0 +1,128 @@
+---
+- name: NFS server OS maintenance
+  hosts: storage
+  become: true
+  gather_facts: true
+
+  vars:
+    confirm_os_upgrade: false
+
+  tasks:
+    - name: Verify Ubuntu 24.04
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == "Ubuntu"
+          - ansible_facts['distribution_version'] is version('24.04', '>=')
+          - ansible_facts['distribution_version'] is version('24.10', '<')
+
+    - name: Check RAID status
+      ansible.builtin.command: cat /proc/mdstat
+      register: raid_status
+      changed_when: false
+
+    - name: Verify all RAID members are active
+      ansible.builtin.assert:
+        that:
+          - "'[4/4] [UUUU]' in raid_status.stdout"
+        fail_msg: "RAID is degraded. Stop maintenance."
+
+    - name: Check NFS mount source
+      ansible.builtin.command: findmnt -rn -T /srv/nfs -o SOURCE
+      register: nfs_source
+      changed_when: false
+
+    - name: Check NFS filesystem
+      ansible.builtin.command: findmnt -rn -T /srv/nfs -o FSTYPE
+      register: nfs_fstype
+      changed_when: false
+
+    - name: Verify NFS storage is mounted correctly
+      ansible.builtin.assert:
+        that:
+          - nfs_source.stdout == "/dev/md0"
+          - nfs_fstype.stdout == "ext4"
+
+    - name: Check NFS service
+      ansible.builtin.command: systemctl is-active nfs-server
+      register: nfs_service
+      changed_when: false
+
+    - name: Verify NFS service
+      ansible.builtin.assert:
+        that:
+          - nfs_service.stdout == "active"
+
+    - name: Check NFS exports
+      ansible.builtin.command: exportfs -v
+      register: nfs_exports
+      changed_when: false
+
+    - name: Verify Kubernetes NFS export
+      ansible.builtin.assert:
+        that:
+          - "'/srv/nfs/k8s' in nfs_exports.stdout"
+
+    - name: Check dpkg consistency
+      ansible.builtin.command: dpkg --audit
+      register: dpkg_audit
+      changed_when: false
+
+    - name: Verify dpkg consistency
+      ansible.builtin.assert:
+        that:
+          - dpkg_audit.stdout | trim == ""
+
+    - name: Check available disk space
+      ansible.builtin.command: df -Pm / /boot /srv/nfs
+      register: disk_space
+      changed_when: false
+
+    - name: Display disk space
+      ansible.builtin.debug:
+        var: disk_space.stdout_lines
+
+    - name: Refresh APT package lists
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Simulate dist-upgrade
+      ansible.builtin.command: apt-get -s dist-upgrade
+      register: simulation
+      changed_when: false
+
+    - name: Block package removals and release upgrades
+      ansible.builtin.assert:
+        that:
+          - "(simulation.stdout_lines | select('match', '^(Remv|Purg) ') | list | length) == 0"
+          - "'Ubuntu:26.04' not in simulation.stdout"
+        fail_msg: "Unexpected APT changes. Stop maintenance."
+
+    - name: Display proposed changes
+      ansible.builtin.debug:
+        msg:
+          - "{{ simulation.stdout_lines | select('search', 'upgraded,') | list }}"
+          - "{{ simulation.stdout_lines | select('match', '^Inst (linux-|mdadm|nfs-|netplan|initramfs|systemd|openssh)') | list }}"
+
+    - name: Upgrade Ubuntu packages without reboot
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: false
+        dpkg_options: force-confdef,force-confold
+        lock_timeout: 300
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: l
+        APT_LISTCHANGES_FRONTEND: none
+      when: confirm_os_upgrade | bool
+
+    - name: Check reboot requirement
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_flag
+
+    - name: Display maintenance status
+      ansible.builtin.debug:
+        msg:
+          - "Upgrade approved: {{ confirm_os_upgrade }}"
+          - "Reboot required: {{ reboot_flag.stat.exists }}"
+          - "Current kernel: {{ ansible_facts['kernel'] }}"

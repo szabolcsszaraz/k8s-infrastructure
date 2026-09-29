@@ -1,0 +1,36 @@
+# Ansible secrets
+inventory/group_vars/all/vault.yml
+.vault_pass
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# SSH keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Kubernetes credentials
+kubeconfig
+kubeconfig.*
+*.kubeconfig
+.kube/
+
+# Backups and database exports
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.sql.gz
+*.bak
+
+# Temporary files
+*.retry
+*.log
+.DS_Store
+__pycache__/

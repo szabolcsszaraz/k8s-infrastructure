@@ -1,0 +1,98 @@
+---
+- name: Worker2 OS maintenance
+  hosts: worker2
+  become: true
+  gather_facts: true
+
+  vars:
+    confirm_os_upgrade: false
+
+  tasks:
+    - name: Verify Debian 12
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Debian"
+          - ansible_distribution_major_version == "12"
+
+    - name: Verify worker2 is cordoned
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/kubectl
+          - get
+          - node
+          - worker2
+          - -o
+          - "jsonpath={.spec.unschedulable}"
+      delegate_to: master
+      become: false
+      register: node_status
+      changed_when: false
+
+    - name: Stop if worker2 is schedulable
+      ansible.builtin.assert:
+        that:
+          - node_status.stdout == "true"
+
+    - name: Check dpkg consistency
+      ansible.builtin.command: dpkg --audit
+      register: dpkg_audit
+      changed_when: false
+
+    - name: Stop if dpkg has unresolved problems
+      ansible.builtin.assert:
+        that:
+          - dpkg_audit.stdout | trim == ""
+
+    - name: Check available disk space
+      ansible.builtin.command: df -Pm / /boot
+      register: disk_space
+      changed_when: false
+
+    - name: Display disk space
+      ansible.builtin.debug:
+        var: disk_space.stdout_lines
+
+    - name: Refresh APT package lists
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: Simulate dist-upgrade
+      ansible.builtin.command: apt-get -s dist-upgrade
+      register: simulation
+      changed_when: false
+
+    - name: Block removals and Kubernetes component upgrades
+      ansible.builtin.assert:
+        that:
+          - "(simulation.stdout_lines | select('match', '^Remv ') | list | length) == 0"
+          - "(simulation.stdout_lines | select('match', '^Inst (kubelet|kubeadm|kubectl|kubernetes-cni|containerd|docker|etcd)( |$)') | list | length) == 0"
+          - "'Debian:13' not in simulation.stdout"
+        fail_msg: "Unexpected package changes. Stop and review the APT plan."
+
+    - name: Display proposed changes
+      ansible.builtin.debug:
+        msg:
+          - "{{ simulation.stdout_lines | select('search', 'upgraded,') | list }}"
+          - "{{ simulation.stdout_lines | select('match', '^Inst (linux-image|grub|systemd|openssh|network-manager)') | list }}"
+
+    - name: Upgrade Debian packages without reboot
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: false
+        dpkg_options: force-confdef,force-confold
+        lock_timeout: 300
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+        NEEDRESTART_MODE: l
+      when: confirm_os_upgrade | bool
+
+    - name: Check whether reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_flag
+
+    - name: Display maintenance status
+      ansible.builtin.debug:
+        msg:
+          - "Upgrade approved: {{ confirm_os_upgrade }}"
+          - "Reboot required: {{ reboot_flag.stat.exists }}"

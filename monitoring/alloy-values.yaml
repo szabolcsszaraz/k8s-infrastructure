@@ -1,0 +1,80 @@
+---
+# Grafana Alloy Helm chart: 1.13.0
+
+controller:
+  type: daemonset
+
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+alloy:
+  mounts:
+    varlog: true
+
+  securityContext:
+    runAsUser: 0
+
+  extraEnv:
+    - name: NODE_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: spec.nodeName
+
+  configMap:
+    create: true
+    content: |-
+      logging {
+        level = "info"
+      }
+
+      loki.write "default" {
+        endpoint {
+          url = "http://loki-0.loki-headless.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
+
+      local.file_match "pods" {
+        path_targets = [{
+          __path__ = "/var/log/pods/*/*/*.log",
+          job      = "kubernetes-pods",
+          node     = sys.env("NODE_NAME"),
+        }]
+      }
+
+      discovery.relabel "pods" {
+        targets = local.file_match.pods.targets
+
+        rule {
+          source_labels = ["__path__"]
+          regex         = `/var/log/pods/([^_]+)_([^_]+)_[^/]+/([^/]+)/[^/]+\.log`
+          target_label  = "namespace"
+          replacement   = "$1"
+        }
+
+        rule {
+          source_labels = ["__path__"]
+          regex         = `/var/log/pods/([^_]+)_([^_]+)_[^/]+/([^/]+)/[^/]+\.log`
+          target_label  = "pod"
+          replacement   = "$2"
+        }
+
+        rule {
+          source_labels = ["__path__"]
+          regex         = `/var/log/pods/([^_]+)_([^_]+)_[^/]+/([^/]+)/[^/]+\.log`
+          target_label  = "container"
+          replacement   = "$3"
+        }
+      }
+
+      loki.source.file "pods" {
+        targets    = discovery.relabel.pods.output
+        forward_to = [loki.process.pods.receiver]
+      }
+
+      loki.process "pods" {
+        stage.cri {}
+
+        forward_to = [loki.write.default.receiver]
+      }

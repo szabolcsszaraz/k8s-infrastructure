@@ -7,7 +7,7 @@
   vars:
     confirm_os_upgrade: false
     confirm_console_access: false
-    etcd_snapshot_path: /var/backups/kubernetes/etcd-20260929T111416Z.db
+    etcd_snapshot_dir: /var/backups/kubernetes
 
   tasks:
     - name: Verify Debian 12
@@ -69,17 +69,38 @@
       ansible.builtin.assert:
         that:
           - "'is healthy' in etcd_health.stdout"
+    
+    - name: Find etcd snapshots
+      ansible.builtin.find:
+        paths: "{{ etcd_snapshot_dir }}"
+        patterns: "etcd-*.db"
+        file_type: file
+      register: etcd_snapshots
 
-    - name: Check etcd snapshot
-      ansible.builtin.stat:
-        path: "{{ etcd_snapshot_path }}"
-      register: etcd_snapshot
-
-    - name: Verify snapshot exists and is not empty
+    - name: Verify at least one etcd snapshot exists
       ansible.builtin.assert:
         that:
-          - etcd_snapshot.stat.exists
-          - etcd_snapshot.stat.size > 1000000
+          - etcd_snapshots.matched > 0
+        fail_msg: "No etcd snapshot found in {{ etcd_snapshot_dir }}"
+
+    - name: Find newest etcd snapshot
+      ansible.builtin.set_fact:
+        newest_etcd_snapshot: >-
+          {{
+            (etcd_snapshots.files
+            | sort(attribute='mtime', reverse=true)
+            | first)
+          }}
+
+    - name: Verify newest etcd snapshot is not empty
+      ansible.builtin.assert:
+        that:
+          - newest_etcd_snapshot.size > 1000000
+        fail_msg: "Newest etcd snapshot is unexpectedly small."
+
+    - name: Display newest etcd snapshot
+      ansible.builtin.debug:
+        msg: "Newest etcd snapshot: {{ newest_etcd_snapshot.path }}"
 
     - name: Check IP forwarding
       ansible.builtin.command: sysctl -n net.ipv4.ip_forward

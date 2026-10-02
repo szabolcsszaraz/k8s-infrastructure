@@ -1,0 +1,96 @@
+---
+- name: Install ingress-nginx
+  hosts: master
+  become: true
+
+  vars:
+    ingress_manifest_local: "{{ playbook_dir }}/../platform/ingress-nginx/ingress-nginx.yaml"
+    ingress_manifest_remote: "/tmp/ingress-nginx.yaml"
+
+  tasks:
+    - name: Copy ingress-nginx manifest to master
+      ansible.builtin.copy:
+        src: "{{ ingress_manifest_local }}"
+        dest: "{{ ingress_manifest_remote }}"
+        mode: "0644"
+
+    - name: Apply ingress-nginx manifest
+      ansible.builtin.command:
+        cmd: kubectl apply -f "{{ ingress_manifest_remote }}"
+      register: ingress_apply
+      changed_when: >
+        'created' in ingress_apply.stdout or
+        'configured' in ingress_apply.stdout
+
+    - name: Show kubectl output
+      ansible.builtin.debug:
+        var: ingress_apply.stdout_lines
+
+    - name: Wait for ingress controller rollout
+      ansible.builtin.command:
+        cmd: kubectl -n ingress-nginx rollout status deployment/ingress-nginx-controller --timeout=180s
+      changed_when: false
+
+    - name: Show ingress-nginx services
+      ansible.builtin.command:
+        cmd: kubectl -n ingress-nginx get svc
+      register: ingress_services
+      changed_when: false
+
+    - name: Print ingress-nginx services
+      ansible.builtin.debug:
+        var: ingress_services.stdout_lines
+
+    - name: Copy svk frontend ingress
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../platform/ingress-nginx/apps/svk-fe-ingress.yaml"
+        dest: "/tmp/svk-fe-ingress.yaml"
+        mode: "0644"
+
+    - name: Copy svk backend ingress
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../platform/ingress-nginx/apps/svk-be-ingress.yaml"
+        dest: "/tmp/svk-be-ingress.yaml"
+        mode: "0644"
+
+    - name: Apply svk frontend ingress
+      ansible.builtin.command:
+        cmd: kubectl apply -f /tmp/svk-fe-ingress.yaml
+      changed_when: false
+
+    - name: Apply svk backend ingress
+      ansible.builtin.command:
+        cmd: kubectl apply -f /tmp/svk-be-ingress.yaml
+      changed_when: false
+
+    - name: Show ingresses
+      ansible.builtin.command:
+        cmd: kubectl -n app get ingress
+      register: app_ingresses
+      changed_when: false
+
+    - name: Print ingresses
+      ansible.builtin.debug:
+        var: app_ingresses.stdout_lines
+
+    - name: Copy backend ingress network policy
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../platform/ingress-nginx/network-policies/allow-ingress-to-svk-be.yaml"
+        dest: "/tmp/allow-ingress-to-svk-be.yaml"
+        mode: "0644"
+
+    - name: Apply backend ingress network policy
+      ansible.builtin.command:
+        cmd: kubectl apply -f /tmp/allow-ingress-to-svk-be.yaml
+      changed_when: false
+
+    - name: Copy Grafana ingress
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../platform/ingress-nginx/apps/grafana-ingress.yaml"
+        dest: "/tmp/grafana-ingress.yaml"
+        mode: "0644"
+
+    - name: Apply Grafana ingress
+      ansible.builtin.command:
+        cmd: kubectl apply -f /tmp/grafana-ingress.yaml
+      changed_when: false

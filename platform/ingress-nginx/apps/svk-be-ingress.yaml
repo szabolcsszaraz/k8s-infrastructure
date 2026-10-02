@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: svk-be
+  namespace: app
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: api.svk-ukf.sk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: svk-be
+                port:
+                  number: 80

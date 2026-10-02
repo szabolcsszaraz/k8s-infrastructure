@@ -1,0 +1,19 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: svk-fe
+  namespace: app
+spec:
+  ingressClassName: nginx
+
+  rules:
+    - host: svk-ukf.sk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: svk-fe
+                port:
+                  number: 80

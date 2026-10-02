@@ -1,0 +1,47 @@
+---
+- name: Install custom Grafana dashboards
+  hosts: master
+  become: true
+
+  vars:
+    dashboard_local: "{{ playbook_dir }}/../monitoring/dashboards/cluster-overview.json"
+    dashboard_remote: "/tmp/cluster-overview.json"
+    dashboard_configmap: "grafana-dashboard-cluster-overview"
+
+  tasks:
+    - name: Copy Cluster Overview dashboard to master
+      ansible.builtin.copy:
+        src: "{{ dashboard_local }}"
+        dest: "{{ dashboard_remote }}"
+        mode: "0644"
+
+    - name: Create or update Grafana dashboard ConfigMap
+      ansible.builtin.shell: |
+        kubectl -n monitoring create configmap {{ dashboard_configmap }} \
+          --from-file=cluster-overview.json={{ dashboard_remote }} \
+          --dry-run=client \
+          -o yaml | \
+        kubectl label \
+          --local \
+          -f - \
+          grafana_dashboard=1 \
+          -o yaml | \
+        kubectl apply -f -
+      register: dashboard_apply
+      changed_when: >
+        'created' in dashboard_apply.stdout or
+        'configured' in dashboard_apply.stdout
+
+    - name: Show ConfigMap result
+      ansible.builtin.debug:
+        var: dashboard_apply.stdout_lines
+
+    - name: Verify dashboard ConfigMap
+      ansible.builtin.command:
+        cmd: kubectl -n monitoring get configmap {{ dashboard_configmap }}
+      register: dashboard_check
+      changed_when: false
+
+    - name: Print dashboard ConfigMap
+      ansible.builtin.debug:
+        var: dashboard_check.stdout_lines
